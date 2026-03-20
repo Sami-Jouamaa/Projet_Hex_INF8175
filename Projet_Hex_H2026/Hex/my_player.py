@@ -31,6 +31,6 @@ class MyPlayer(PlayerHex):
         Returns:
             Action: The best action as determined by minimax.
         """
-
+        print(self.get_piece_type())
         #TODO
         raise MethodNotImplementedError()

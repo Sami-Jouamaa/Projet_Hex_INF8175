@@ -9,7 +9,9 @@ from player_hex import PlayerHex
 from master_hex import MasterHex
 from game_state_hex import GameStateHex
 
-from seahorse.player.proxies import InteractivePlayerProxy, LocalPlayerProxy, RemotePlayerProxy, ContaineredPlayerProxy, PlayerProxy
+from seahorse.player.proxies import (
+    InteractivePlayerProxy, LocalPlayerProxy,
+    RemotePlayerProxy, ContaineredPlayerProxy, PlayerProxy)
 from seahorse.utils.gui_client import GUIClient
 from seahorse.utils.recorders import StateRecorder
 from seahorse.utils.custom_exceptions import PlayerDuplicateError
@@ -18,7 +20,8 @@ from loguru import logger
 from argparse import RawTextHelpFormatter
 
 
-def play(player1: PlayerProxy, player2: PlayerProxy, log_level, port, address, gui, record, gui_path):
+def play(player1: PlayerProxy, player2: PlayerProxy, log_level,
+         port, address, gui, record, gui_path):
 
     time_limit = 15 * 60
     list_players_proxies = [player1, player2]
@@ -30,10 +33,13 @@ def play(player1: PlayerProxy, player2: PlayerProxy, log_level, port, address, g
 
     init_rep = BoardHex(env=env, dim=dim)
     initial_game_state = GameStateHex(
-        scores=init_scores, active_player=list_players[0], players=list_players, rep=init_rep, step=0)
+        scores=init_scores, active_player=list_players[0],
+        players=list_players, rep=init_rep, step=0)
     try:
         master = MasterHex(
-            name="Hex", initial_game_state=initial_game_state, players_iterator=list_players_proxies, log_level=log_level, port=port,
+            name="Hex", initial_game_state=initial_game_state,
+            players_iterator=list_players_proxies,
+            log_level=log_level, port=port,
             hostname=address, time_limit=time_limit
         )
     except PlayerDuplicateError:
@@ -52,8 +58,8 @@ if __name__ == "__main__":
         prog="main_hex.py",
         description="Description of the different execution modes:",
         epilog=r'''
-  ___           _                    
- / __| ___ __ _| |_  ___ _ _ ___ ___ 
+  ___           _
+ / __| ___ __ _| |_  ___ _ _ ___ ___
  \__ \/ -_) _` | ' \/ _ \ '_(_-</ -_)
  |___/\___\__,_|_||_\___/_| /__/\___|
                                      ''',
@@ -106,9 +112,11 @@ if __name__ == "__main__":
         player2_class = __import__(
             splitext(basename(list_players[1]))[0], fromlist=[None])
         player1 = ContaineredPlayerProxy(player1_class.MyPlayer(
-            "R", name=splitext(basename(list_players[0]))[0]+"_1"))
+            "R", name=splitext(basename(list_players[0]))[0]+"_1"),
+            gs=GameStateHex)
         player2 = ContaineredPlayerProxy(player2_class.MyPlayer(
-            "B", name=splitext(basename(list_players[1]))[0]+"_2"))
+            "B", name=splitext(basename(list_players[1]))[0]+"_2"),
+            gs=GameStateHex)
         play(player1=player1, player2=player2, log_level=log_level, port=port,
              address=address, gui=gui, record=record, gui_path=gui_path)
     elif type == "host_game":

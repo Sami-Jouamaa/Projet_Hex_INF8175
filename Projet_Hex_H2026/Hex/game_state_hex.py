@@ -266,33 +266,29 @@ class GameStateHex(GameState):
         return "The game is finished!"
 
     def to_json(self) -> dict:
-        data = {i: j for i, j in self.__dict__.items(
-        ) if i != "_possible_stateless_actions" and i != "_possible_stateful_actions"}
-        data["step"] = self.step
-        return data
+        return {"scores": self.scores,
+                "players": [x.to_json() for x in self.players],
+                "active_player": self.active_player.to_json(),
+                "rep": self.rep.to_json(),
+                "step": self.step
+                }
 
     @classmethod
-    def from_json(_, data: str | dict, *, active_player: Optional[PlayerHex] = None) -> Serializable:
+    def from_json(_, data: str | dict, *,
+                  active_player: Optional[PlayerHex] = None) -> Serializable:
         if isinstance(data, str):
             d = json.loads(data)
-            scores = {int(k): v for k, v in d["scores"].items()}
-            players = [PlayerHex.from_json(json.dumps(x))
-                       for x in d["players"]]
-            rep = BoardHex.from_json(json.dumps(d["rep"]))
-
-            if active_player is None:
-                active_player = PlayerHex.from_json(
-                    json.dumps(d["active_player"]))
         else:
             d = data
-            scores = d["scores"]
-            players = d["players"]
-            rep = d["rep"]
 
-            if active_player is None:
-                active_player = d["active_player"]
+        scores = {int(k): v for k, v in d["scores"].items()}
+        players = [PlayerHex.from_json(x) for x in d["players"]]
+        rep = BoardHex.from_json(d["rep"])
 
-        step = d.get("step", 0)
+        step = int(d["step"])
+
+        if active_player is None:
+            active_player = PlayerHex.from_json(d["active_player"])
 
         return GameStateHex(scores=scores, active_player=active_player,
                             players=players, rep=rep, step=step)

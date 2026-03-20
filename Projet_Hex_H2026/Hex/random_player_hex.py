@@ -34,6 +34,6 @@ class MyPlayer(PlayerHex):
         Returns:
             Action: Randomly selected feasible action
         """
-        possible_actions = current_state.get_possible_stateless_actions()
+        possible_actions = current_state.get_possible_stateful_actions()
         action = random.choice(list(possible_actions))
         return action
