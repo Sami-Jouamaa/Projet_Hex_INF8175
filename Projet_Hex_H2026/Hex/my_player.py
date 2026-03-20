@@ -20,6 +20,7 @@ class MyPlayer(PlayerHex):
             name (str, optional): Name of the player (default is "bob")
         """
         super().__init__(piece_type, name)
+        self.nb_moves = 0
 
     def compute_action(self, current_state: GameStateHex, remaining_time: float = 15*60, **kwargs) -> Action:
         """
@@ -31,6 +32,15 @@ class MyPlayer(PlayerHex):
         Returns:
             Action: The best action as determined by minimax.
         """
-        print(self.get_piece_type())
         #TODO
-        raise MethodNotImplementedError()
+        # To return at the end
+        current_board = current_state.get_rep().get_env()
+        
+        for position, piece in current_board.items():
+            print(piece.get_type())
+            # print(piece)
+            # print(position)
+            
+        self.nb_moves += 1
+        return next(current_state.generate_possible_stateful_actions())
+        
