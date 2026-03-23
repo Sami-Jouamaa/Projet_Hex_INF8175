@@ -71,13 +71,9 @@ class MyPlayer(PlayerHex):
                 self.opponent_move_history.append(moves)
             else:
                 continue
-        
-        if dimensions[0] % 2 == 0:
-            # for the index to be correct
-            self.center = (round(dimensions[0]/2) - 1, round(dimensions[1]/2) - 1)
-        else:
-            # otherwise it'll round up and be offcenter by a bit
-            self.center = (round(dimensions[0]/2) - 2, round(dimensions[1]/2) - 2)
+
+        # to get the proper index for the center
+        self.center = (round(dimensions[0]/2) - 1, round(dimensions[1]/2) - 1)
         
         # check turn number, incrementation is done first
         self.nb_moves += 1
