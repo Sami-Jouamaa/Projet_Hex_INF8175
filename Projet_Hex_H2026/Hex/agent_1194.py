@@ -666,7 +666,7 @@ class MyPlayer(PlayerHex):
         my_dist, _ = self.shortest_path(state, my_piece)
         opp_dist, opp_path = self.shortest_path(state, opponent)
         
-        if opp_dist <= 5:
+        if opp_dist <= 12: #just block it...
             emergency = True
         else:
             emergency = False
