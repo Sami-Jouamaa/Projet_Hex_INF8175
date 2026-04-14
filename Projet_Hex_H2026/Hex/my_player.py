@@ -18,6 +18,11 @@ class MyPlayer(PlayerHex):
     Attributes:
         piece_type (str): piece type of the player "R" for the first player and "B" for the second player
     """
+    BRIDGE_DIRECTIONS = [
+            (1, 1), (2, -1), (1, -2),
+            (-1, -1), (-2, 1), (-1, 2)
+        ]
+    
     BRIDGE_TO_GAPS = {
         (1, 1): [(1, 0), (0, 1)],
         (2, -1): [(1, 0), (1, -1)],
@@ -826,16 +831,11 @@ class MyPlayer(PlayerHex):
 
         opponent = "B" if my_piece == "R" else "R"
 
-        directions = [
-            (1, 1), (2, -1), (1, -2),
-            (-1, -1), (-2, 1), (-1, 2)
-        ]
-
         for (i, j), piece in board.items():
             if piece.get_type() != my_piece:
                 continue
 
-            for di, dj in directions:
+            for di, dj in self.BRIDGE_DIRECTIONS:
                 bridge_end = (i + di, j + dj)
 
                 # vérifier que endpoint est notre pièce
@@ -999,6 +999,48 @@ class MyPlayer(PlayerHex):
             return best_action
 
         return None
+    
+    def opponent_bridge_gaps(self, state, opponent):
+        board = state.get_rep().get_env()
+        gaps = set()
+
+        for (i, j), piece in board.items():
+            if piece.get_type() != opponent:
+                continue
+
+            for di, dj in self.BRIDGE_DIRECTIONS:
+                end = (i + di, j + dj)
+
+                if end not in board:
+                    continue
+                if board[end].get_type() != opponent:
+                    continue
+
+                if (di, dj) not in self.BRIDGE_TO_GAPS:
+                    continue
+
+                valid = True
+                current_gaps = []
+
+                for gx, gy in self.BRIDGE_TO_GAPS[(di, dj)]:
+                    gap = (i + gx, j + gy)
+
+                    if not state.in_board(gap):
+                        valid = False
+                        break
+
+                    if gap in board:
+                        if board[gap].get_type() == opponent:
+                            valid = False
+                            break
+                    else:
+                        current_gaps.append(gap)
+
+                if valid:
+                    for g in current_gaps:
+                        gaps.add(g)
+
+        return gaps
 
     def get_top_actions(self, state):
 
@@ -1008,6 +1050,8 @@ class MyPlayer(PlayerHex):
         my_dist, my_path = self.shortest_path(state, my_piece)
         opp_dist, opp_path = self.shortest_path(state, opponent)
         my_progress = self.get_furthest_progress(state, my_piece)
+        
+        opp_bridge_gaps = self.opponent_bridge_gaps(state, opponent)
         # print("My distance", my_dist)
         # print("Opp distance", opp_dist)
         # print(" opp_path ",opp_path)
@@ -1035,15 +1079,17 @@ class MyPlayer(PlayerHex):
 
         for action in actions:
             next_state = action.get_next_game_state()
-            position = self.get_action_position(state, action)
+            position = self.get_action_position(next_state, action)
 
             new_opp_dist, _ = self.shortest_path(next_state, opponent)
 
-            if position in critical_blocks or new_opp_dist > opp_dist:
-                blocking_moves.append(action)
-
+            # if position in critical_blocks or new_opp_dist > opp_dist:
+            #     blocking_moves.append(action)
 
             score = self.evaluate(next_state)
+            
+            if position in opp_bridge_gaps:
+                score -= 500
             score += self.path_action_bonus(
                 state,
                 action,
@@ -1066,7 +1112,7 @@ class MyPlayer(PlayerHex):
         #     key=lambda a: self.shortest_path(a.get_next_game_state(), opponent)[0],
         #     reverse=True
         # )
-        #
+        
         # if emergency:
         #     return blocking_moves
         return [a for _, a in scored[:k]]
@@ -1397,6 +1443,35 @@ class MyPlayer(PlayerHex):
 
         # 🔥 prioritize middle of path (harder to bypass)
         return candidates[len(candidates) // 2]
+    
+    def second_turn_mirror(self, current_state):
+        step = current_state.get_step()
+
+        # only act on your first move (i.e. second turn of the game)
+        if step != 1:
+            return None
+
+        board = current_state.get_rep().get_env()
+        N = current_state.get_rep().dimensions[0]
+
+        # only one move on board → opponent's first move
+        opponent_pos = next(iter(board))
+        oi, oj = opponent_pos
+
+        mirror = (N - 1 - oi, N - 1 - oj)
+
+        move = StatelessAction({
+            "piece": self.piece_type,
+            "position": mirror
+        })
+
+        possible = set(current_state.generate_possible_stateless_actions())
+
+        if move in possible:
+            return move
+
+        # fallback (rare but important)
+        return None
 
     def compute_action(self, current_state: GameStateHex, remaining_time: float = 15 * 60, **kwargs) -> Action:
         """
@@ -1416,6 +1491,10 @@ class MyPlayer(PlayerHex):
         if len(self.transposition_table) > 50000:
             self.transposition_table.clear()
 
+        move = self.second_turn_mirror(current_state)
+        if move is not None:
+            return move
+        
         # fallback (au cas où timeout direct)
         fallback_actions = list(current_state.generate_possible_stateful_actions())
         if fallback_actions:
@@ -1465,9 +1544,9 @@ class MyPlayer(PlayerHex):
                                 if first_answer in current_state.generate_possible_stateless_actions():
                                     return first_answer
         else:
-            if current_state.step < 2:
+            if current_state.get_step() < 2:
                 if self.piece_type == "R":
-                    if current_state.step == 0:  # premier tour à jouer pour les rouge (toujours possible de jouer)
+                    if current_state.get_step() == 0:  # premier tour à jouer pour les rouge (toujours possible de jouer)
                         opening = StatelessAction({"piece": self.piece_type, "position": (5, 7)})
                         return opening
                 else:
@@ -1478,9 +1557,9 @@ class MyPlayer(PlayerHex):
                         return StatelessAction({"piece": self.piece_type, "position": (7, 6)})
 
             # First Answer moves
-            elif current_state.step < 4:
+            elif current_state.get_step() < 4:
                 if self.piece_type == "R":
-                    if current_state.step == 2:  # second tour à jouer pour les rouge (toujours possible de jouer)
+                    if current_state.get_step() == 2:  # second tour à jouer pour les rouge (toujours possible de jouer)
                         nb_blue_cases, blue_cases = current_rep.get_pieces_player(current_state.players[1])
                         if blue_cases[0] == (6, 6):
                             first_answer = StatelessAction({"piece": self.piece_type, "position": (6, 7)})
