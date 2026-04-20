@@ -1,8 +1,6 @@
 import copy
 import random
 import numpy as np
-
-from board_hex import BoardHex
 from player_hex import PlayerHex
 from seahorse.game.action import Action
 from seahorse.game.stateless_action import StatelessAction
@@ -49,14 +47,40 @@ class MyPlayer(PlayerHex):
         self.distances = []
         # list of moves as position in order from first to last
         self.previous_board = None
+        self.move_history = []
         self.opponent_move_history = []
         self.center = [0, 0]
+        # self.bridge_protection = dict()
+        # self.opponent_bridges = dict()
+        # self.opponent_bridges_attack = dict()
         self.transposition_table = {}
+        self.openning_msg = ''
 
     def opponent_history(self, move):
         if move is not None:
             pos = move.get_action()["position"]
             self.opponent_move_history.append(pos)
+
+    def priority_heuristic_paramaters(self, state: GameStateHex, win_path):
+        '''if nb_chain > 8 and state.get_step() > 8:
+            return [1, 0, 0]
+        elif nb_chain > 7 and state.get_step() <= 8:
+            return [1, 0, 0.1]
+        elif nb_chain <= 7 and state.get_step() <= 8:
+            return [1, 0.5, 0.1]
+        else:
+            return [1, 0.5, 0]
+         Chains are potential bridges
+            '''
+        if win_path >= 11:
+            return [1, 0, 0, 0]
+        elif state.get_step() >= 30:
+            return [1, 0.3, 0.7, 0.2]
+        else:
+            return [1, 0.5, 0.4, 0.7]
+
+
+
 
     def center_control_score(self, state):
 
@@ -206,127 +230,6 @@ class MyPlayer(PlayerHex):
 
         return INF, []
 
-    def cell_traversal_cost(self, board, pos, my_piece):
-        if pos in board:
-            if board[pos].get_type() == my_piece:
-                return 0.0
-            return float("inf")
-        return 1.0
-
-    def bridge_step_cost(self, board, start, end, my_piece):
-        middle_cells = self.get_bridge_middle_cells(start, end)
-        if len(middle_cells) != 2:
-            return float("inf"), []
-
-        if end in board and board[end].get_type() != my_piece:
-            return float("inf"), middle_cells
-
-        cost = 0.0 if (end in board and board[end].get_type() == my_piece) else 0.8
-
-        for mid in middle_cells:
-            if mid in board:
-                if board[mid].get_type() != my_piece:
-                    return float("inf"), middle_cells
-            else:
-                cost += 0.35
-
-        return cost, middle_cells
-
-    def bridge_path(self, state, player_piece):
-        import heapq
-
-        board = state.get_rep().get_env()
-        size = state.get_rep().get_dimensions()[0]
-        inf = float("inf")
-
-        dist = {}
-        parent = {}
-        edge_meta = {}
-        heap = []
-
-        if player_piece == "R":
-            starts = [(0, j) for j in range(size)]
-        else:
-            starts = [(i, 0) for i in range(size)]
-
-        for pos in starts:
-            start_cost = self.cell_traversal_cost(board, pos, player_piece)
-            if start_cost == inf:
-                continue
-            dist[pos] = start_cost
-            parent[pos] = None
-            edge_meta[pos] = None
-            heapq.heappush(heap, (start_cost, pos))
-
-        visited = set()
-        bridge_directions = [
-            (2, -1), (1, 1),
-            (-1, 2), (-2, 1),
-            (1, -2), (-1, -1)
-        ]
-
-        while heap:
-            current_cost, pos = heapq.heappop(heap)
-
-            if pos in visited:
-                continue
-            visited.add(pos)
-
-            i, j = pos
-            if (player_piece == "R" and i == size - 1) or (player_piece == "B" and j == size - 1):
-                corridor = []
-                cur = pos
-                while cur is not None:
-                    meta = edge_meta[cur]
-                    corridor.append(cur)
-                    if meta is not None:
-                        for mid in meta["middle_cells"]:
-                            corridor.append(mid)
-                    cur = parent[cur]
-                corridor.reverse()
-
-                deduped = []
-                seen = set()
-                for cell in corridor:
-                    if cell not in seen:
-                        deduped.append(cell)
-                        seen.add(cell)
-                return current_cost, deduped
-
-            for _, (_, (ni, nj)) in state.get_neighbours(i, j).items():
-                nxt = (ni, nj)
-                if not state.in_board(nxt) or nxt in visited:
-                    continue
-
-                step_cost = self.cell_traversal_cost(board, nxt, player_piece)
-                if step_cost == inf:
-                    continue
-
-                new_cost = current_cost + step_cost
-                if nxt not in dist or new_cost < dist[nxt]:
-                    dist[nxt] = new_cost
-                    parent[nxt] = pos
-                    edge_meta[nxt] = {"middle_cells": []}
-                    heapq.heappush(heap, (new_cost, nxt))
-
-            for di, dj in bridge_directions:
-                nxt = (i + di, j + dj)
-                if not state.in_board(nxt) or nxt in visited:
-                    continue
-
-                step_cost, middle_cells = self.bridge_step_cost(board, pos, nxt, player_piece)
-                if step_cost == inf:
-                    continue
-
-                new_cost = current_cost + step_cost
-                if nxt not in dist or new_cost < dist[nxt]:
-                    dist[nxt] = new_cost
-                    parent[nxt] = pos
-                    edge_meta[nxt] = {"middle_cells": middle_cells}
-                    heapq.heappush(heap, (new_cost, nxt))
-
-        return inf, []
-
     def are_connected(self, state, start, end, my_piece):
         if start == end:
             return True
@@ -467,24 +370,16 @@ class MyPlayer(PlayerHex):
         if not bridge_candidates:
             return {}
 
-        _, bridge_corridor = self.bridge_path(state, my_piece)
-        if not bridge_corridor:
-            return {}
-
-        bridge_corridor_set = set(bridge_corridor)
+        _, win_path = self.shortest_path(state, my_piece)
         priorities = {}
 
         for bridge_cell, connected_pieces in bridge_candidates.items():
-            # Only create bridge links on the current bridge corridor.
-            if bridge_cell not in bridge_corridor_set:
-                continue
-
             priorities[bridge_cell] = self.bridge_cell_priority(
                 state,
                 my_piece,
                 bridge_cell,
                 connected_pieces,
-                bridge_corridor
+                win_path
             )
 
         return priorities
@@ -665,14 +560,109 @@ class MyPlayer(PlayerHex):
         bridge_values = sorted(relevant_bridges.values(), reverse=True)
         latent_pressure = sum(bridge_values[:3])
         strong_bridge_count = sum(1 for value in bridge_values if value >= 30)
-        #live_bridges = len(self.how_many_bridges(state, my_piece))
+        live_bridges = len(self.how_many_bridges(state, my_piece))
         contact = self.has_contact(state, my_piece, opponent)
 
         if contact:
             #return latent_pressure * 0.45 + live_bridges * 8
             return latent_pressure * 0.7 + strong_bridge_count * 14
 
-        return latent_pressure * 0.7 + strong_bridge_count * 14 #+ live_bridges * 10
+        return latent_pressure * 0.7 + strong_bridge_count * 14 + live_bridges * 10
+
+    def bridge_timing_score2(self, state, my_piece, opponent):
+        """
+        Determine if NOW is the right time to build bridges.
+        Returns a score that should be ADDED to bridge values.
+        Higher score = better time to build bridges.
+        """
+        relevant_bridges = self.get_relevant_bridge_moves(state, my_piece)
+        if not relevant_bridges:
+            return 0
+
+        size = state.get_rep().get_dimensions()[0]
+        board = state.get_rep().get_env()
+        my_dist, my_path = self.shortest_path(state, my_piece)
+        opp_dist, opp_path = self.shortest_path(state, opponent)
+
+        bridge_values = sorted(relevant_bridges.values(), reverse=True)
+        latent_pressure = sum(bridge_values[:3])
+        strong_bridge_count = sum(1 for value in bridge_values if value >= 30)
+        live_bridges = len(self.how_many_bridges(state, my_piece))
+        contact = self.has_contact(state, my_piece, opponent)
+
+        # ===== GAME PHASE FACTORS =====
+        board_filled = len(board) / (size * size)
+
+        # Early game: Building bridges is good
+        # Mid game: Depends on position
+        # Late game: Direct path may be better than bridges
+
+        if board_filled < 0.3:  # Early game
+            phase_multiplier = 1.2
+        elif board_filled < 0.7:  # Mid game
+            phase_multiplier = 1.0
+        else:  # Late game
+            phase_multiplier = 0.6  # Prefer direct connections
+
+        # ===== DISTANCE TO WIN FACTORS =====
+        if my_dist <= 2:
+            # Very close to winning - don't waste time on bridges
+            return 0  # Just win directly!
+
+        if my_dist <= 5:
+            # Close to winning - bridges still useful but lower priority
+            phase_multiplier *= 0.7
+
+        # ===== OPPONENT THREAT FACTORS =====
+        if opp_dist <= 2:
+            # Opponent is about to win - don't build bridges, BLOCK!
+            return -100  # Negative score = don't build bridges now
+
+        if opp_dist <= 4:
+            # Opponent is close - defensive mode
+            phase_multiplier *= 0.5
+
+        # ===== CONTEXTUAL FACTORS =====
+        # contact_bonus = 0
+        #
+        # if contact:
+        #     # When in contact with opponent, bridges are riskier but can be powerful
+        #     # Check if bridges help bypass opponent
+        #     bypass_potential = self.bridge_bypass_potential(state, my_piece, opponent)
+        #
+        #     if bypass_potential > 0:
+        #         # Bridge helps bypass opponent - BUILD IT!
+        #         contact_bonus = bypass_potential * 20
+        #         phase_multiplier *= 1.3
+        #     else:
+        #         # Bridge doesn't help - be defensive
+        #         phase_multiplier *= 0.4
+
+        # ===== ADVANCEMENT FACTOR =====
+        # # How much do bridges extend our frontier?
+        # current_furthest = self.get_furthest_progress(state, my_piece)
+        # bridge_advancement = 0
+        #
+        # for bridge_cell, value in relevant_bridges.items():
+        #     if my_piece == "R":
+        #         advancement = bridge_cell[0] - current_furthest
+        #     else:
+        #         advancement = bridge_cell[1] - current_furthest
+        #
+        #     if advancement > 0:
+        #         bridge_advancement += advancement * value / 100
+        #
+        # advancement_bonus = min(bridge_advancement, 50)  # Cap at 50
+
+        # ===== FINAL SCORE =====
+        if contact:
+            base_score = latent_pressure * 0.45 + live_bridges * 8
+        else:
+            base_score = latent_pressure * 0.7 + strong_bridge_count * 14 + live_bridges * 10
+
+        final_score = (base_score * phase_multiplier)
+
+        return max(final_score, -50)  # Don't go too negative
 
     def path_follow_score(self, state, my_piece, opponent):
         board = state.get_rep().get_env()
@@ -743,22 +733,83 @@ class MyPlayer(PlayerHex):
 
         contact = self.has_contact(state, my_piece, opponent)
 
+        #our_bridges_count = len(self.how_many_bridges(state, my_piece))
+        potential_bridges = self.count_potential_bridges(state, my_piece)
+
         bridge_gap = self.bridge_formation_score(state, my_piece)
         bridge_timing = self.bridge_timing_score(state, my_piece, opponent)
+        bridge_timing2 = self.bridge_timing_score2(state, my_piece, opponent)
         path_score = self.path_follow_score(state, my_piece, opponent)
 
-        block_score = self.strategic_blocking_score(state, my_piece, opponent)
+        block_score = self.blocking_score(state, my_piece, opponent)
         center_score = self.center_control_score(state)
-        return (
-                (opp_dist - my_dist) * 3
-                # + len(our_bridges) * 6  # 🔥 priorité bridges
-                + bridge_gap * 6
-                + bridge_timing
-                + path_score * 1.35
-                + block_score * 2.2
-                # + bridge_timing2 * 1
-                + center_score * 0.5
-        )
+
+        # =========================================
+        # 🔴 PHASE 3 — DEFENSE (PRIORITÉ GLOBALE)
+        # =========================================
+        # if opp_dist <= my_dist:
+        #     #print("Phase 3")
+        #
+        #     return (
+        #             (opp_dist - my_dist) * 10  # 🔥 très fort
+        #             + block_score * 6
+        #     )
+
+        # =========================================
+        # 🔴 PHASE 2 — CONTACT
+        # =========================================
+
+        # if my_dist <= 2:
+        #     # Very close to winning - don't waste time on bridges
+        #     return 0  # Just win directly!
+
+        if contact:
+            #print("Phase 2")
+
+            # =========================================
+            # Pre-Phase — Center control
+            # =========================================
+            # if early_game:
+            #     #print("Early Game Contact")
+            #     return (
+            #             (opp_dist - my_dist) * 2
+            #             + self.center_control_score(state) * 5
+            #             #+ len(self.how_many_bridges(state, my_piece)) * 3
+            #     )
+            #Link chains to make bridges
+            # print("Bridge Count", our_bridges_count)
+            # if our_bridges_count >= 5: #Starting at 3, we letting to much chances to be blocked
+            #     print((opp_dist - my_dist))
+            #     return (
+            #         (opp_dist - my_dist) * 10
+            #         #+ our_bridges_count * 2
+            #     )
+
+            return (
+                    (opp_dist - my_dist) * 4
+                    + potential_bridges * 6 #Aggrandi la surface
+                    + bridge_gap * 6
+                    + bridge_timing * 0.4
+                    + path_score * 1.1
+                    #+ bridge_timing2 * 0.4
+                    + block_score * 2.5
+                    + center_score
+            )
+
+        # =========================================
+        # 🟢 PHASE 1 — BUILD (PAS DE CONTACT)
+        # =========================================
+        else:
+            #print("Phase 1")
+            return (
+                    (opp_dist - my_dist) * 3
+                    #+ len(our_bridges) * 6  # 🔥 priorité bridges
+                    + bridge_gap * 6
+                    + bridge_timing
+                    + path_score * 1.35
+                    #+ bridge_timing2 * 1
+                    + center_score * 0.5
+            )
 
     def has_contact(self, state, my_piece, opponent):
 
@@ -774,296 +825,93 @@ class MyPlayer(PlayerHex):
 
         return False
 
-    def strategic_blocking_score(self, state, my_piece, opponent):
+    def how_many_bridges(self, state, my_piece):
         board = state.get_rep().get_env()
-        size = state.get_rep().get_dimensions()[0]
-        opp_dist, opp_path = self.shortest_path(state, opponent)
-        opp_bridge_dist, opp_bridge_path = self.bridge_path(state, opponent)
-        opp_bridge_moves = self.get_relevant_bridge_moves(state, opponent)
+        bridges = set()
 
-        score = 0
-        score += opp_dist * 10
-        score += opp_bridge_dist * 14
-        score -= len(opp_bridge_moves) * 7
-
-        for path in (opp_path, opp_bridge_path):
-            for pos in path:
-                if pos in board:
-                    if board[pos].get_type() == my_piece:
-                        score += 6
-                    continue
-
-                opponent_neighbors = 0
-                own_neighbors = 0
-                for _, (ptype, _) in state.get_neighbours(pos[0], pos[1]).items():
-                    if ptype == opponent:
-                        opponent_neighbors += 1
-                    elif ptype == my_piece:
-                        own_neighbors += 1
-
-                score += own_neighbors * 4
-                score -= opponent_neighbors * 2
-
-        return score / max(1, size)
-
-    def finite_distance(self, value, size):
-        if value == float("inf"):
-            return size * 3
-        return value
-
-    def blocking_move_score(self, state, action, my_piece, opponent, baseline=None):
-        position = self.get_action_position(state, action)
-        if position is None:
-            return float("-inf")
-
-        size = state.get_rep().get_dimensions()[0]
-
-        if baseline is None:
-            opp_dist, opp_path = self.shortest_path(state, opponent)
-            opp_bridge_dist, opp_bridge_path = self.bridge_path(state, opponent)
-            my_dist, _ = self.shortest_path(state, my_piece)
-            my_bridge_dist, _ = self.bridge_path(state, my_piece)
-            opp_bridge_moves = self.get_relevant_bridge_moves(state, opponent)
-        else:
-            opp_dist = baseline["opp_dist"]
-            opp_path = baseline["opp_path"]
-            opp_bridge_dist = baseline["opp_bridge_dist"]
-            opp_bridge_path = baseline["opp_bridge_path"]
-            my_dist = baseline["my_dist"]
-            my_bridge_dist = baseline["my_bridge_dist"]
-            opp_bridge_moves = baseline["opp_bridge_moves"]
-
-        next_state = action.get_next_game_state()
-        new_opp_dist, new_opp_path = self.shortest_path(next_state, opponent)
-        new_opp_bridge_dist, new_opp_bridge_path = self.bridge_path(next_state, opponent)
-        new_my_dist, _ = self.shortest_path(next_state, my_piece)
-        new_my_bridge_dist, _ = self.bridge_path(next_state, my_piece)
-        new_opp_bridge_moves = self.get_relevant_bridge_moves(next_state, opponent)
-
-        opp_dist_before = self.finite_distance(opp_dist, size)
-        opp_dist_after = self.finite_distance(new_opp_dist, size)
-        opp_bridge_before = self.finite_distance(opp_bridge_dist, size)
-        opp_bridge_after = self.finite_distance(new_opp_bridge_dist, size)
-        my_dist_before = self.finite_distance(my_dist, size)
-        my_dist_after = self.finite_distance(new_my_dist, size)
-        my_bridge_before = self.finite_distance(my_bridge_dist, size)
-        my_bridge_after = self.finite_distance(new_my_bridge_dist, size)
-
-        score = 0
-        score += (opp_dist_after - opp_dist_before) * 85
-        score += (opp_bridge_after - opp_bridge_before) * 65
-        score += (len(opp_bridge_moves) - len(new_opp_bridge_moves)) * 22
-
-        if position in opp_path:
-            score += 20
-        if position in opp_bridge_path:
-            score += 28
-
-        opponent_neighbors = 0
-        own_neighbors = 0
-        for _, (ptype, _) in state.get_neighbours(position[0], position[1]).items():
-            if ptype == opponent:
-                opponent_neighbors += 1
-            elif ptype == my_piece:
-                own_neighbors += 1
-
-        score += opponent_neighbors * 14
-        score += own_neighbors * 5
-
-        if new_opp_path:
-            score += min(self.distance_to_path(position, new_opp_path), 4) * 6
-        if new_opp_bridge_path:
-            score += min(self.distance_to_path(position, new_opp_bridge_path), 4) * 5
-
-        score += (my_dist_before - my_dist_after) * 14
-        score += (my_bridge_before - my_bridge_after) * 10
-
-        if my_dist_after > my_dist_before:
-            score -= (my_dist_after - my_dist_before) * 18
-        if my_bridge_after > my_bridge_before:
-            score -= (my_bridge_after - my_bridge_before) * 12
-
-        return score
-
-    def detect_corridor_threat(self, state: GameStateHex, opponent: str) -> bool:
-        """
-        Detect when the opponent has a connected chain that spans >= 35% of their
-        winning axis. This covers both edge slashes and center vertical/horizontal
-        corridors — any committed attack that has real momentum.
-        """
-        board = state.get_rep().get_env()
-        size = state.get_rep().get_dimensions()[0]
-
-        opp_pieces = [pos for pos, piece in board.items() if piece.get_type() == opponent]
-        if len(opp_pieces) < 3:
-            return False
-
-        # Find the furthest axis progress among opponent pieces
-        if opponent == "R":
-            # Red wins top (row 0) → bottom (row size-1)
-            max_row = max(p[0] for p in opp_pieces)
-            return max_row >= size * 0.35
-        else:
-            # Blue wins left (col 0) → right (col size-1)
-            max_col = max(p[1] for p in opp_pieces)
-            return max_col >= size * 0.35
-
-    def get_corridor_intercept_block(self, state: GameStateHex) -> tuple | None:
-        """
-        Find the best cell to cut the opponent's corridor regardless of whether
-        it hugs an edge or runs through the center.
-
-        Strategy:
-        1. Find opponent's frontier row/col (furthest axis progress)
-        2. Define the intercept band = frontier+1 to frontier+3 (just ahead)
-        3. Among empty cells in the intercept band that lie on the opponent's
-           bridge path, score them by:
-           - Being on BOTH shortest_path and bridge_path (true bottleneck)
-           - Having more opponent neighbours (harder to reroute around)
-           - Being further along the axis (deeper cut)
-           - Being closer to the lateral center of opponent's pieces (cuts the
-             widest part of the corridor, not a thin tendril)
-        4. Return the highest-scored candidate, or fall back to any on-path cell.
-        """
-        my_piece = self.get_piece_type()
         opponent = "B" if my_piece == "R" else "R"
-        board = state.get_rep().get_env()
-        size = state.get_rep().get_dimensions()[0]
 
-        opp_pieces = [pos for pos, piece in board.items() if piece.get_type() == opponent]
-        if not opp_pieces:
-            return None
-
-        # Compute frontier (furthest axis position opponent has reached)
-        if opponent == "R":
-            frontier = max(p[0] for p in opp_pieces)
-        else:
-            frontier = max(p[1] for p in opp_pieces)
-
-        # Compute lateral center of opponent's pieces (to prefer cuts through the
-        # main body of the corridor, not a stray outlier)
-        if opponent == "R":
-            lateral_center = sum(p[1] for p in opp_pieces) / len(opp_pieces)
-        else:
-            lateral_center = sum(p[0] for p in opp_pieces) / len(opp_pieces)
-
-        opp_dist, opp_path = self.shortest_path(state, opponent)
-        _, opp_bridge_path = self.bridge_path(state, opponent)
-
-        opp_path_set = set(opp_path)
-        opp_bridge_set = set(opp_bridge_path)
-        combined = opp_path_set | opp_bridge_set
-
-        # Empty candidates on the opponent's combined path
-        candidates = [pos for pos in combined if pos not in board]
-        if not candidates:
-            return None
-
-        # Intercept band: 1 to 4 rows/cols ahead of the frontier
-        # We prefer just-ahead cells (intercept at +1 or +2), fall back to +3/+4
-        def axis_val(pos):
-            return pos[0] if opponent == "R" else pos[1]
-
-        def lateral_val(pos):
-            return pos[1] if opponent == "R" else pos[0]
-
-        intercept_candidates = [
-            p for p in candidates
-            if frontier + 1 <= axis_val(p) <= frontier + 4
-        ]
-
-        # If nothing in the intercept band, take any candidate ahead of frontier
-        if not intercept_candidates:
-            intercept_candidates = [p for p in candidates if axis_val(p) > frontier]
-
-        # Still nothing — fall back to all candidates (opponent near winning)
-        if not intercept_candidates:
-            intercept_candidates = candidates
-
-        best_pos = None
-        best_score = float("-inf")
-
-        for pos in intercept_candidates:
-            # Count opponent neighbours — more = tighter corridor, harder to reroute
-            opp_neighbours = sum(
-                1 for _, (ptype, _) in state.get_neighbours(pos[0], pos[1]).items()
-                if ptype == opponent
-            )
-
-            # Being on both paths = true bottleneck
-            in_both = (pos in opp_path_set) and (pos in opp_bridge_set)
-            both_bonus = 50 if in_both else 0
-
-            # Prefer cells closer to lateral center (cut the main corridor body)
-            lateral_dist = abs(lateral_val(pos) - lateral_center)
-            lateral_bonus = max(0, 10 - lateral_dist * 2)
-
-            # Deeper axis = less room for opponent to reroute behind the cut
-            depth_score = axis_val(pos) * 5
-
-            # Prefer cells in the tightest part of the intercept band (+1 > +4)
-            proximity_bonus = max(0, 20 - (axis_val(pos) - frontier - 1) * 5)
-
-            score = both_bonus + opp_neighbours * 15 + lateral_bonus + depth_score + proximity_bonus
-
-            if score > best_score:
-                best_score = score
-                best_pos = pos
-
-        return best_pos
-
-    def get_best_blocking_move(self, state: GameStateHex):
-        my_piece = self.get_piece_type()
-        opponent = "B" if my_piece == "R" else "R"
-        size = state.get_rep().get_dimensions()[0]
-
-        opp_dist, opp_path = self.shortest_path(state, opponent)
-        opp_bridge_dist, opp_bridge_path = self.bridge_path(state, opponent)
-        my_dist, _ = self.shortest_path(state, my_piece)
-        my_bridge_dist, _ = self.bridge_path(state, my_piece)
-        opp_bridge_moves = self.get_relevant_bridge_moves(state, opponent)
-
-        baseline = {
-            "opp_dist": opp_dist,
-            "opp_path": opp_path,
-            "opp_bridge_dist": opp_bridge_dist,
-            "opp_bridge_path": opp_bridge_path,
-            "my_dist": my_dist,
-            "my_bridge_dist": my_bridge_dist,
-            "opp_bridge_moves": opp_bridge_moves,
-        }
-
-        best_pos = None
-        best_score = float("-inf")
-
-        for action in state.generate_possible_stateful_actions():
-            position = self.get_action_position(state, action)
-            if position is None:
+        for (i, j), piece in board.items():
+            if piece.get_type() != my_piece:
                 continue
 
-            score = self.blocking_move_score(
-                state,
-                action,
-                my_piece,
-                opponent,
-                baseline=baseline,
-            )
+            for di, dj in self.BRIDGE_DIRECTIONS:
+                bridge_end = (i + di, j + dj)
 
-            if score > best_score:
-                best_score = score
-                best_pos = position
+                # vérifier que endpoint est notre pièce
+                if bridge_end not in board:
+                    continue
+                if board[bridge_end].get_type() != my_piece:
+                    continue
 
-        urgency = min(
-            self.finite_distance(opp_dist, size),
-            self.finite_distance(opp_bridge_dist, size),
-        )
-        # Lower threshold: a center corridor scores ~20-25, edge ~15-20.
-        # The old threshold of 30 was silently rejecting valid blocks.
-        threshold = 12 if urgency <= 4 else 18
+                dx, dy = di, dj
 
-        if best_score >= threshold:
-            return best_pos
-        return None
+                if (dx, dy) not in self.BRIDGE_TO_GAPS:
+                    continue
+
+                valid_bridge = True
+                enemy_in_gaps = 0
+
+                for gx, gy in self.BRIDGE_TO_GAPS[(dx, dy)]:
+                    gap = (i + gx, j + gy)
+
+                    if not state.in_board(gap):
+                        valid_bridge = False
+                        break
+
+                    if gap in board:
+                        if board[gap].get_type() == my_piece:
+                            valid_bridge = False
+                            break
+                        elif board[gap].get_type() == opponent:
+                            enemy_in_gaps += 1
+
+                if enemy_in_gaps == len(self.BRIDGE_TO_GAPS[(dx, dy)]):
+                    valid_bridge = False
+
+                if valid_bridge:
+                    bridge = tuple(sorted([(i, j), bridge_end]))
+                    bridges.add(bridge)
+
+        return bridges
+
+    def should_complete_bridge(self, state, my_piece, our_bridges):
+        board = state.get_rep().get_env()
+
+        for start, end in our_bridges:
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            for gx, gy in self.BRIDGE_TO_GAPS[(dx, dy)]:
+                gap = (start[0] + gx, start[1] + gy)
+
+                if gap in board and board[gap].get_type() != my_piece:
+                    return 1
+        return 0
+
+    def blocking_score(self, state, my_piece, opponent):
+
+        board = state.get_rep().get_env()
+        score = 0
+
+        for (i, j), piece in board.items():
+
+            neighbours = state.get_neighbours(i, j)
+
+            # rouge si c'est une pièce adverse
+            if piece.get_type() == opponent:
+
+                for _, (ptype, _) in neighbours.items():
+                    if ptype == my_piece:
+                        score += 1  # on bloque
+
+            # bleu si c'est notre pièce
+            if piece.get_type() == my_piece:
+
+                for _, (ptype, _) in neighbours.items():
+                    if ptype == opponent:
+                        score -= 1  # danger
+
+        return score
 
     def path_action_bonus(self, state, action, my_piece, opponent, my_path=None, relevant_bridges=None, my_dist=None, my_progress=None):
         position = self.get_action_position(state, action)
@@ -1202,7 +1050,15 @@ class MyPlayer(PlayerHex):
         my_dist, my_path = self.shortest_path(state, my_piece)
         opp_dist, opp_path = self.shortest_path(state, opponent)
         my_progress = self.get_furthest_progress(state, my_piece)
+        
+        opp_bridge_gaps = self.opponent_bridge_gaps(state, opponent)
+        # print("My distance", my_dist)
+        # print("Opp distance", opp_dist)
+        # print(" opp_path ",opp_path)
 
+        emergency = False
+        if opp_dist <= 5:
+            emergency = True
         critical_blocks = {pos for pos in opp_path if pos not in board}
         for pos in opp_path:
             if pos not in board:
@@ -1217,17 +1073,6 @@ class MyPlayer(PlayerHex):
 
         actions = list(state.generate_possible_stateful_actions())
         relevant_bridges = self.get_relevant_bridge_moves(state, my_piece)
-        my_bridge_dist, _ = self.bridge_path(state, my_piece)
-        opp_bridge_dist, opp_bridge_path = self.bridge_path(state, opponent)
-        baseline = {
-            "opp_dist": opp_dist,
-            "opp_path": opp_path,
-            "opp_bridge_dist": opp_bridge_dist,
-            "opp_bridge_path": opp_bridge_path,
-            "my_dist": my_dist,
-            "my_bridge_dist": my_bridge_dist,
-            "opp_bridge_moves": self.get_relevant_bridge_moves(state, opponent),
-        }
 
         scored = []
         blocking_moves = []
@@ -1238,17 +1083,13 @@ class MyPlayer(PlayerHex):
 
             new_opp_dist, _ = self.shortest_path(next_state, opponent)
 
-            # if position in critical_blocks or new_opp_dist > opp_dist:
-            #     blocking_moves.append(action)
+            if position in critical_blocks or new_opp_dist > opp_dist:
+                blocking_moves.append(action)
 
             score = self.evaluate(next_state)
-            score += self.blocking_move_score(
-                state,
-                action,
-                my_piece,
-                opponent,
-                baseline=baseline,
-            ) * 0.12
+            
+            if position in opp_bridge_gaps:
+                score -= 500
             score += self.path_action_bonus(
                 state,
                 action,
@@ -1267,13 +1108,13 @@ class MyPlayer(PlayerHex):
             scored.append((score, action))
 
         scored.sort(reverse=True, key=lambda x: x[0])
-        # blocking_moves.sort(
-        #     key=lambda a: self.shortest_path(a.get_next_game_state(), opponent)[0],
-        #     reverse=True
-        # )
+        blocking_moves.sort(
+            key=lambda a: self.shortest_path(a.get_next_game_state(), opponent)[0],
+            reverse=True
+        )
         
-        # if emergency:
-        #     return blocking_moves
+        if emergency:
+            return blocking_moves
         return [a for _, a in scored[:k]]
 
     def get_action_position(self, state, action):
@@ -1310,9 +1151,13 @@ class MyPlayer(PlayerHex):
 
         if depth == 0 or state.is_done():
             return self.evaluate(state)
-            #return self.local_search_eval(state) #local_search
+
         actions = self.get_top_actions(state)
 
+
+        #
+        # self.transposition_table[state_key] = (depth, min_eval)
+        # return min_eval
 
         if maximizing:
             max_value = float("-inf")
@@ -1576,12 +1421,57 @@ class MyPlayer(PlayerHex):
         board = state.get_rep().get_env()
 
         items = tuple(sorted((pos, piece.get_type()) for pos, piece in board.items()))
-        active_player_id = state.get_active_player().get_id()
-
-        return (items, active_player_id)
+        #Add player_id
+        # state.get_player_id()
+        return items
 
     def get_blocking_path_move(self, state: GameStateHex):
-        return self.get_best_blocking_move(state)
+        my_piece = self.get_piece_type()
+        opponent = "B" if my_piece == "R" else "R"
+        board = state.get_rep().get_env()
+
+        opp_dist, opp_path = self.shortest_path(state, opponent)
+
+        if not opp_path:
+            return None
+
+        # Take the MOST central / impactful blocking cell
+        candidates = [pos for pos in opp_path if pos not in board]
+
+        if not candidates:
+            return None
+
+        # 🔥 prioritize middle of path (harder to bypass)
+        return candidates[len(candidates) // 2]
+    
+    def second_turn_mirror(self, current_state):
+        step = current_state.get_step()
+
+        # only act on your first move (i.e. second turn of the game)
+        if step != 1:
+            return None
+
+        board = current_state.get_rep().get_env()
+        N = current_state.get_rep().dimensions[0]
+
+        # only one move on board → opponent's first move
+        opponent_pos = next(iter(board))
+        oi, oj = opponent_pos
+
+        mirror = (N - 1 - oi, N - 1 - oj)
+
+        move = StatelessAction({
+            "piece": self.piece_type,
+            "position": mirror
+        })
+
+        possible = set(current_state.generate_possible_stateless_actions())
+
+        if move in possible:
+            return move
+
+        # fallback (rare but important)
+        return None
 
     def compute_action(self, current_state: GameStateHex, remaining_time: float = 15 * 60, **kwargs) -> Action:
         """
@@ -1619,79 +1509,113 @@ class MyPlayer(PlayerHex):
                     if piece.get_type() != self.piece_type:
                         self.opponent_move_history.append(pos)
         # openings
-        if current_state.get_step() < 2:
-            if self.piece_type == "R":
-                if current_state.get_step() == 0:
-                    return StatelessAction({"piece": self.piece_type, "position": (8,4)})
-            else:
-                opening = StatelessAction({"piece": self.piece_type, "position": (4,8)})
-                if opening in current_state.generate_possible_stateless_actions():
-                    return opening
-                else:
-                    return StatelessAction({"piece": self.piece_type, "position": (8,4)})
-        elif current_state.get_step() < 4:
-            if self.piece_type == "R":
-                if current_state.get_step() == 2:
-                    nb_blue_cases, blue_cases = current_rep.get_pieces_player(current_state.players[1])
-                    if blue_cases[0] == (3, 10):
-                        first_answer = StatelessAction({"piece": self.piece_type, "position": (4, 10)})
-                        return first_answer
-                    else:
-                        nb_red_cases, red_cases = current_rep.get_pieces_player(current_state.players[0])
-                        if red_cases[-1] == (9, 8):
-                            first_answer = StatelessAction({"piece": self.piece_type, "position": (8, 4)})
-                            if first_answer in current_state.generate_possible_stateless_actions():
-                                return first_answer
-                            elif StatelessAction({"piece": self.piece_type, "position": (4,8)}) in current_state.generate_possible_stateless_actions():  # If our opening is already taken, try to counter it
-                                return StatelessAction({"piece": self.piece_type, "position": (4, 8)})
-                            else:
-                                return StatelessAction({"piece": self.piece_type, "position": (3, 4)})
-                        else:
-                            first_answer = StatelessAction({"piece": self.piece_type, "position": (10, 3)})
-                            if first_answer in current_state.generate_possible_stateless_actions():
-                                return first_answer
+        random_oppening = random.randint(0,2)
 
+        if random_oppening == 0:
+            if current_state.get_step() < 2:
+                if self.piece_type == "R":
+                    if current_state.get_step() == 0:
+                        return StatelessAction({"piece": self.piece_type, "position": (8,4)})
+                else:
+                    opening = StatelessAction({"piece": self.piece_type, "position": (4,8)})
+                    if opening in current_state.generate_possible_stateless_actions():
+                        return opening
+                    else:
+                        return StatelessAction({"piece": self.piece_type, "position": (8,4)})
+            elif current_state.get_step() < 4:
+                if self.piece_type == "R":
+                    if current_state.get_step() == 2:
+                        nb_blue_cases, blue_cases = current_rep.get_pieces_player(current_state.players[1])
+                        if blue_cases[0] == (3, 10):
+                            first_answer = StatelessAction({"piece": self.piece_type, "position": (4, 10)})
+                            return first_answer
+                        else:
+                            nb_red_cases, red_cases = current_rep.get_pieces_player(current_state.players[0])
+                            if red_cases[-1] == (9, 8):
+                                first_answer = StatelessAction({"piece": self.piece_type, "position": (8, 4)})
+                                if first_answer in current_state.generate_possible_stateless_actions():
+                                    return first_answer
+                                elif StatelessAction({"piece": self.piece_type, "position": (4,8)}) in current_state.generate_possible_stateless_actions():  # If our opening is already taken, try to counter it
+                                    return StatelessAction({"piece": self.piece_type, "position": (4, 8)})
+                                else:
+                                    return StatelessAction({"piece": self.piece_type, "position": (3, 4)})
+                            else:
+                                first_answer = StatelessAction({"piece": self.piece_type, "position": (10, 3)})
+                                if first_answer in current_state.generate_possible_stateless_actions():
+                                    return first_answer
+        else:
+            if current_state.get_step() < 2:
+                if self.piece_type == "R":
+                    if current_state.get_step() == 0:  # premier tour à jouer pour les rouge (toujours possible de jouer)
+                        opening = StatelessAction({"piece": self.piece_type, "position": (5, 7)})
+                        return opening
+                else:
+                    opening = StatelessAction({"piece": self.piece_type, "position": (7, 5)})
+                    if opening in current_state.generate_possible_stateless_actions():
+                        return opening
+                    else:  # If our opening is already taken, try to counter it
+                        return StatelessAction({"piece": self.piece_type, "position": (7, 6)})
+
+            # First Answer moves
+            elif current_state.get_step() < 4:
+                if self.piece_type == "R":
+                    if current_state.get_step() == 2:  # second tour à jouer pour les rouge (toujours possible de jouer)
+                        nb_blue_cases, blue_cases = current_rep.get_pieces_player(current_state.players[1])
+                        if blue_cases[0] == (6, 6):
+                            first_answer = StatelessAction({"piece": self.piece_type, "position": (6, 7)})
+                            return first_answer
+                        elif blue_cases[0] == (6, 7):
+                            first_answer = StatelessAction({"piece": self.piece_type, "position": (6, 6)})
+                            return first_answer
+                        elif blue_cases[0] == (7, 6):
+                            first_answer = StatelessAction({"piece": self.piece_type, "position": (6, 9)})
+                            return first_answer
+                        else:
+                            return StatelessAction({"piece": self.piece_type, "position": (7, 6)})
+                else:
+                    nb_red_cases, red_cases = current_rep.get_pieces_player(current_state.players[0])
+                    if red_cases[-1] == (9, 8):
+                        first_answer = StatelessAction({"piece": self.piece_type, "position": (8, 4)})
+                        if first_answer in current_state.generate_possible_stateless_actions():
+                            return first_answer
+                        elif StatelessAction({"piece": self.piece_type, "position": (
+                        4, 8)}) in current_state.generate_possible_stateless_actions():  # If our opening is already taken, try to counter it
+                            return StatelessAction({"piece": self.piece_type, "position": (4, 8)})
+                        else:
+                            return StatelessAction({"piece": self.piece_type, "position": (3, 4)})
+                    else:
+                        first_answer = StatelessAction({"piece": self.piece_type, "position": (10, 3)})
+                        if first_answer in current_state.generate_possible_stateless_actions():
+                            return first_answer
+        # if self.has_contact(current_state, self.piece_type, "B" if self.piece_type == "R" else "R"):
+            # move = self.get_bridge_path_move(current_state)
+            #
+            # if move is not None:
+            #     print("Bridge pathway move!", move)
+            #     return StatelessAction({
+            #         "piece": self.piece_type,
+            #         "position": move
+            #     })
         my_piece = self.piece_type
         opponent = "B" if my_piece == "R" else "R"
 
         my_dist, my_path = self.shortest_path(current_state, my_piece)
-        opp_dist, opp_path = self.shortest_path(current_state, opponent)
-        my_bridge_dist, _ = self.bridge_path(current_state, my_piece)
-        opp_bridge_dist, _ = self.bridge_path(current_state, opponent)
+        opp_dist, _ = self.shortest_path(current_state, opponent)
         my_prog = self.get_furthest_progress(current_state, my_piece)
         opp_prog = self.get_furthest_progress(current_state, opponent)
-        print("my_dist", my_dist, "my_prog", my_prog, "bridge_my_dist", my_bridge_dist)
-        print("opp_dist", opp_dist)
-        print("Candidates", my_path)
-        print("Bridge Path", self.bridge_path(current_state, my_piece))
+        print("my_dist", my_dist, "my_prog", my_prog)
+        print("opp_dist", opp_dist, "opp_prog", opp_prog)
+
         #priorise win 1-2 moves
-        if my_dist < 2:
+        if my_dist <= 2:
             print(f"my_path {my_path}")
             for pos in my_path:
                 if pos not in env:
                     print(f"🏆 WINNING MOVE! Playing {pos} completes the path!")
                     return StatelessAction({"piece": self.piece_type, "position": pos})
 
-        # 🗡️ CORRIDOR INTERCEPT — fires for ANY committed opponent attack
-        # (center slash, edge slash, diagonal corridor) as soon as they've
-        # crossed 35% of their axis. Runs before bridge defense because a
-        # live corridor threat is more urgent than a single bridge.
-        if self.detect_corridor_threat(current_state, opponent):
-            intercept = self.get_corridor_intercept_block(current_state)
-            if intercept is not None:
-                print(f"🗡️ Corridor threat detected! Intercepting at {intercept}")
-                return StatelessAction({"piece": self.piece_type, "position": intercept})
-
-        threatened_move = self.get_threatened_bridge_move(current_state)
-        if threatened_move is not None:
-            print("Bridge threatened! Defending...")
-            return threatened_move
-        # if (
-        #     opp_dist <= my_dist + 1
-        #     or opp_bridge_dist <= my_bridge_dist + 1
-        #     or opp_dist <= 5
-        #     or opp_bridge_dist <= 5
-        # ):
+        # 🔥 GLOBAL DEFENSE
+        # if opp_dist <= my_dist:
         #     move = self.get_blocking_path_move(current_state)
         #     if move:
         #         print("🔥 Blocking opponent path!", move)
@@ -1700,14 +1624,28 @@ class MyPlayer(PlayerHex):
         #             "position": move
         #         })
 
+        path_move = self.get_path_progress_move(current_state)
+        if path_move is not None and opp_dist > my_dist - 1:
+            print("🛤️ Strong path move selected")
+            return path_move
+
+        # threatened_move = self.get_threatened_bridge_move(current_state)
+        # if threatened_move is not None:
+        #     print("Bridge threatened! Defending...")
+        #     return threatened_move
+        #Handles edges
+        # 🔥 PRIORITÉ ABSOLUE : construire le pathway en cas de contact
+
+
         start = time.time()
 
         # budget temps intelligent (adaptatif)
         moves_left = max(1, (self.dimensions[0] * self.dimensions[1]) - current_state.get_step())
         time_limit = min(remaining_time / moves_left * 1.5, 2.5)
-        #time_limit = min(remaining_time / moves_left * 2.5, 30)
 
         best_action = None #If best_actions ends up to be None, System Crashes!
+        #actions = list(current_state.generate_possible_stateful_actions())
+        #best_action = random.choice(actions) if actions else None
         depth = 1
 
         while True:
@@ -1736,18 +1674,12 @@ class MyPlayer(PlayerHex):
                     best_score = score
                     best_action = action
 
+
+
             depth += 1  # iterative deepening
-        if best_action is None:
-            move = self.get_blocking_path_move(current_state)
-            if move:
-                print("No other Move! Block!", move)
-                return StatelessAction({
-                    "piece": self.piece_type,
-                    "position": move
-                })
-            else:
-                actions = list(current_state.generate_possible_stateful_actions())
-                print("🥹 Random action")
-                best_action = random.choice(actions)
+        if best_action is None: #les blocs vont etre dans les edges
+            actions = list(current_state.generate_possible_stateful_actions())
+            best_action = random.choice(actions) if actions else None
+            print("Random action:", best_action)
         self.previous_board = dict(env)
         return best_action
